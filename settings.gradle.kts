@@ -5,6 +5,13 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
     }
+
+    // The io.quarkus.extension Gradle plugin is used by the experimental
+    // quarkus-smithy module to generate Quarkus extension metadata. Pinned
+    // here so the version is consistent with the Quarkus BOM that module uses.
+    plugins {
+        id("io.quarkus.extension") version "3.35.3"
+    }
 }
 
 rootProject.name = "smithy-java"
@@ -67,6 +74,15 @@ include(":server:server-proxy")
 include(":codegen:codegen-core")
 include(":codegen:codegen-plugin")
 
+// Experimental: Quarkus extension (mirrors the structure of quarkus-grpc-zero).
+// Flat layout so the published artifact IDs match each project's Gradle name
+// and the root build's dependency-substitution rule works for the example.
+// Naming follows the canonical Quarkus convention: runtime artifact has no
+// suffix (`quarkus-smithy`), deployment artifact has `-deployment` suffix.
+include(":quarkus-smithy")
+include(":quarkus-smithy-deployment")
+include(":quarkus-smithy-integration-tests")
+
 // Utilities
 include(":jmespath")
 include(":rulesengine")
@@ -108,6 +124,9 @@ include(":examples:restjson-client")
 include(":examples:standalone-types")
 include(":examples:mcp-server")
 include(":examples:mcp-traits-example")
+include(":examples:quarkus-server")
+include(":examples:quarkus-client")
+include(":examples:quarkus-types")
 
 //MCP
 include(":mcp")

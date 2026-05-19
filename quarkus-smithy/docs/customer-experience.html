@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>quarkus-smithy: customer experience report</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --muted: #666;
+    --line: #e3e3e3;
+    --bg: #fbfbf9;
+    --panel: #ffffff;
+    --before: #fdf3f0;
+    --before-line: #e8c5bb;
+    --after: #f0f7f1;
+    --after-line: #c0dcc4;
+    --code-bg: #f5f3ee;
+    --accent: #2b5a47;
+  }
+  html { background: var(--bg); }
+  body {
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  h1 {
+    font-size: 32px;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  h1 + .subtitle {
+    color: var(--muted);
+    font-size: 17px;
+    margin: 0 0 36px;
+  }
+  h2 {
+    font-size: 22px;
+    margin: 56px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    letter-spacing: -0.005em;
+  }
+  h3 {
+    font-size: 17px;
+    margin: 28px 0 10px;
+    color: var(--accent);
+  }
+  p { margin: 0 0 14px; }
+  .lede {
+    font-size: 17px;
+    color: #333;
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 18px;
+    margin: 0 0 32px;
+  }
+  code, pre {
+    font: 13.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0;
+    border: 1px solid var(--line);
+  }
+  pre code { background: none; padding: 0; font-size: 13px; }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0 24px;
+  }
+  .panel {
+    border-radius: 8px;
+    padding: 16px 18px 18px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .panel.before { background: var(--before); border-color: var(--before-line); }
+  .panel.after  { background: var(--after);  border-color: var(--after-line); }
+  .panel-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 0 0 10px;
+  }
+  .panel.before .panel-label { color: #9b3a26; }
+  .panel.after  .panel-label { color: #2b5a47; }
+  .panel pre { background: rgba(255,255,255,0.55); border-color: rgba(0,0,0,0.06); }
+
+  .diff-add { color: #1f5a32; background: rgba(80, 180, 110, 0.12); display: block; }
+  .diff-rem { color: #8a2e20; background: rgba(220, 90, 70, 0.10); display: block; text-decoration: line-through; text-decoration-color: rgba(140, 50, 40, 0.4); }
+  .diff-ctx { color: #555; display: block; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 24px;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    background: rgba(0,0,0,0.025);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #444;
+  }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .yes { color: #2b5a47; font-weight: 600; }
+  .no  { color: #9b3a26; }
+
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin: 18px 0;
+    font-size: 14.5px;
+  }
+  .callout strong { color: var(--accent); }
+
+  ul, ol { margin: 0 0 18px; padding-left: 22px; }
+  li { margin: 4px 0; }
+
+  .meta {
+    margin-top: 64px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  @media (max-width: 800px) {
+    .compare { grid-template-columns: 1fr; }
+    body { padding: 24px 18px 64px; }
+  }
+</style>
+</head>
+<body>
+
+<h1>quarkus-smithy: customer experience report</h1>
+<p class="subtitle">What changes for a developer building a Quarkus app on top of a Smithy model.</p>
+
+<p class="lede">
+  The <code>quarkus-smithy</code> extension exists to make Smithy-Java feel native to a Quarkus
+  application — codegen runs as part of <code>quarkusGenerateCode</code> instead of a
+  separate Gradle plugin, and Smithy <code>Server</code> beans participate in the standard
+  Quarkus startup/shutdown lifecycle. This report sketches the before/after experience
+  for the three programming models the extension supports.
+</p>
+
+<h2>The three programming models</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th><code>modes</code> in <code>smithy-build.json</code></th>
+      <th>What's generated</th>
+      <th>What ships at runtime</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Server-bean</strong></td>
+      <td><code>["server"]</code></td>
+      <td><code>CoffeeShop</code> service stub, <code>*Operation</code> interfaces, model classes</td>
+      <td><code>Server</code> bean (Smithy Netty), managed by the lifecycle observer</td>
+    </tr>
+    <tr>
+      <td><strong>Typed-client</strong></td>
+      <td><code>["client"]</code></td>
+      <td><code>CoffeeShopClient</code>, model classes</td>
+      <td>CDI-injected client; no Smithy server</td>
+    </tr>
+    <tr>
+      <td><strong>Types-only</strong></td>
+      <td><code>["types"]</code></td>
+      <td>Model classes only (POJOs)</td>
+      <td>User-driven dispatch (Vert.x route, JAX-RS, …); no Smithy server, no Smithy client</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>Same code, different framing.</strong> The extension's <code>CodeGenProvider</code>
+  is mode-agnostic — whatever <code>modes</code> the user puts in <code>smithy-build.json</code>
+  is what gets emitted. The lifecycle observer only does work when a <code>Server</code> bean exists,
+  so Typed-client and Types-only apps pay nothing extra at runtime.
+</div>
+
+<h2>Before / after: <code>build.gradle.kts</code></h2>
+
+<p>
+  This is the most concrete artifact. Without the extension, a Quarkus user building on
+  Smithy-Java applies the <code>smithy-base</code> Gradle plugin, declares
+  <code>smithyBuild(...)</code> dependencies, and wires generated sources into the source
+  set themselves. With the extension, the entire build-side surface is one
+  <code>implementation</code> dep.
+</p>
+
+<div class="compare">
+  <div class="panel before">
+    <p class="panel-label">Before — Quarkus + Smithy via <code>smithy-base</code></p>
+<pre><code>plugins {
+    `java-library`
+    id("io.quarkus") version "3.35.3"
+    id("software.amazon.smithy.gradle.smithy-base")
+}
+
+dependencies {
+    smithyBuild("software.amazon.smithy.java:codegen-plugin:$smithyJavaVersion")
+    smithyBuild("software.amazon.smithy.java:server-api:$smithyJavaVersion")
+
+    implementation("software.amazon.smithy.java:server-netty:$smithyJavaVersion")
+    implementation("software.amazon.smithy.java:aws-server-restjson:$smithyJavaVersion")
+}
+
+afterEvaluate {
+    val codegenPath = smithy.getPluginProjectionPath(
+        smithy.sourceProjection.get(), "java-codegen").get()
+    sourceSets {
+        main {
+            java { srcDir("$codegenPath/java") }
+            resources { srcDir("$codegenPath/resources") }
+        }
+    }
+}
+
+tasks {
+    val smithyBuild by getting
+    compileJava { dependsOn(smithyBuild) }
+}</code></pre>
+  </div>
+
+  <div class="panel after">
+    <p class="panel-label">After — Quarkus + Smithy via <code>quarkus-smithy</code></p>
+<pre><code>plugins {
+    `java-library`
+    id("io.quarkus") version "3.35.3"
+}
+
+dependencies {
+    implementation("software.amazon.smithy.java:quarkus-smithy:$smithyJavaVersion")
+
+    implementation("software.amazon.smithy.java:server-netty:$smithyJavaVersion")
+    implementation("software.amazon.smithy.java:aws-server-restjson:$smithyJavaVersion")
+}
+
+// .smithy files live under src/main/smithy/ — picked up automatically.
+// No source-set wiring. No compileJava.dependsOn. No smithyBuild config.</code></pre>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Surface</th>
+      <th>Before</th>
+      <th>After</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Gradle plugins applied</td><td><code>io.quarkus</code> + <code>smithy-base</code></td><td><code>io.quarkus</code> only</td></tr>
+    <tr><td><code>smithyBuild(...)</code> dep declarations</td><td>≥2 (codegen-plugin + server-api or client-core)</td><td>0</td></tr>
+    <tr><td><code>afterEvaluate { srcDir(...) }</code> wiring</td><td>required</td><td>not needed</td></tr>
+    <tr><td><code>compileJava.dependsOn(smithyBuild)</code></td><td>required</td><td>not needed</td></tr>
+    <tr><td><code>.smithy</code> file location</td><td><code>model/</code> (Smithy CLI default)</td><td><code>src/main/smithy/</code> (Quarkus convention)</td></tr>
+    <tr><td>Lines of build script for codegen wiring</td><td class="num">~14</td><td class="num">1</td></tr>
+  </tbody>
+</table>
+
+<h2>Before / after: server lifecycle</h2>
+
+<p>
+  Without the extension, the user runs <code>Server.start()</code> from
+  <code>main()</code> and parks the thread. With the extension, the user produces a
+  <code>Server</code> bean; Quarkus's lifecycle owns startup and shutdown.
+</p>
+
+<div class="compare">
+  <div class="panel before">
+    <p class="panel-label">Before — <code>BasicServerExample.java</code></p>
+<pre><code>public class BasicServerExample implements Runnable {
+    static final URI endpoint = URI.create("http://localhost:8888");
+
+    public static void main(String[] args) {
+        new BasicServerExample().run();
+    }
+
+    @Override public void run() {
+        Server server = Server.builder()
+                .endpoints(endpoint)
+                .addService(CoffeeShop.builder()
+                        .addCreateOrderOperation(new CreateOrder())
+                        .addGetMenuOperation(new GetMenu())
+                        .addGetOrderOperation(new GetOrder())
+                        .build())
+                .build();
+        server.start();
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            try { server.shutdown().get(); }
+            catch (InterruptedException | ExecutionException ex) {
+                throw new RuntimeException(ex);
+            }
+        }
+    }
+}</code></pre>
+  </div>
+
+  <div class="panel after">
+    <p class="panel-label">After — <code>CoffeeShopServerConfig.java</code></p>
+<pre><code>@ApplicationScoped
+public class CoffeeShopServerConfig {
+
+    @Produces
+    @Singleton
+    Server server() {
+        return Server.builder()
+                .endpoints(URI.create("http://localhost:8888"))
+                .addService(CoffeeShop.builder()
+                        .addCreateOrderOperation(new CreateOrder())
+                        .addGetMenuOperation(new GetMenu())
+                        .addGetOrderOperation(new GetOrder())
+                        .build())
+                .build();
+    }
+}
+
+// SmithyServerLifecycle (provided by the extension) calls
+// server.start() on StartupEvent and server.shutdown().get()
+// on ShutdownEvent — for every Server bean it finds.</code></pre>
+  </div>
+</div>
+
+<p>
+  The producer-method body is byte-identical to the upstream
+  <code>BasicServerExample.run()</code>. The only Quarkus-specific surface a user has to
+  learn is the <code>@Produces</code> wrapper. Everything else — port binding, graceful
+  shutdown, draining the listener — is inherited from Quarkus's standard lifecycle plus
+  the extension's 30-line observer bean.
+</p>
+
+<h2>Before / after: dev-loop</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Action</th>
+      <th>Before — <code>smithy-base</code></th>
+      <th>After — <code>quarkus-smithy</code></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Edit a <code>.smithy</code> file in dev mode</td>
+      <td>Re-run <code>./gradlew build</code> manually; Quarkus dev mode does not see <code>smithyBuild</code></td>
+      <td><code>quarkusDev</code> reruns codegen automatically; affected classes recompile</td>
+    </tr>
+    <tr>
+      <td>Edit an <code>Operation</code> implementation</td>
+      <td>Quarkus dev mode reloads (Java edits)</td>
+      <td>Quarkus dev mode reloads (Java edits)</td>
+    </tr>
+    <tr>
+      <td>Add a new operation to a <code>service</code> shape</td>
+      <td>Edit <code>.smithy</code> → re-run build → IDE notices new files → write impl</td>
+      <td>Edit <code>.smithy</code> → save → IDE notices new files → write impl</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Per-model walkthrough</h2>
+
+<h3>Server-bean — full Smithy server inside Quarkus</h3>
+<p>
+  Generated <code>CoffeeShop</code> service + <code>*Operation</code> interfaces. User
+  produces a fully-built <code>Server</code> bean; the extension's lifecycle observer
+  starts the Smithy Netty listener on <code>StartupEvent</code> and drains it on
+  <code>ShutdownEvent</code>.
+</p>
+<ul>
+  <li><strong>What ships:</strong> <code>quarkus-smithy</code>, <code>server-netty</code>, <code>aws-server-restjson</code> (or another protocol).</li>
+  <li><strong>Two listeners run side by side:</strong> Smithy on <code>:8888</code>, Quarkus's Vert.x on <code>:8080</code>.</li>
+  <li><strong>End-to-end verified:</strong> <code>curl :8888/menu</code> returns the static menu; <code>PUT :8888/order</code> writes through the generated <code>CreateOrderOperation</code> impl; <code>GET :8888/order/{id}</code> reads back.</li>
+</ul>
+
+<h3>Typed-client — call an upstream Smithy service</h3>
+<p>
+  Generated <code>CoffeeShopClient</code> exposed via a <code>@Produces</code> method.
+  No <code>Server</code> bean. The extension's lifecycle observer finds zero servers and
+  no-ops silently.
+</p>
+<ul>
+  <li><strong>What ships:</strong> <code>quarkus-smithy</code>, <code>client-core</code>, <code>aws-client-restjson</code> (or another protocol).</li>
+  <li><strong>Endpoint config via standard CDI:</strong> <code>@ConfigProperty(name = "coffee-shop.upstream-endpoint", defaultValue = "http://localhost:8888")</code> — overridable per environment without code changes.</li>
+  <li><strong>End-to-end verified:</strong> the example proxies <code>:8081/menu</code> → upstream <code>:8888/menu</code> via the typed client, with <code>PUT</code> and <code>GET /order/{id}</code> round-tripping correctly.</li>
+</ul>
+
+<h3>Types-only — Smithy as the DTO source of truth</h3>
+<p>
+  Just generated POJOs (<code>Menu</code>, <code>MenuItem</code>). User dispatches them
+  however they want — typically a Vert.x route or a JAX-RS resource using
+  <code>JsonCodec</code> for serdes.
+</p>
+<ul>
+  <li><strong>What ships:</strong> <code>quarkus-smithy</code>, <code>core</code>, plus a codec module if needed.</li>
+  <li><strong>Lifecycle observer is silent:</strong> no <code>Server</code> bean exists; the extension contributes only codegen.</li>
+  <li><strong>Recommended scoping:</strong> <code>"selector": "[id|namespace = 'com.example']"</code> in <code>smithy-build.json</code>, so generated output stays pinned to your namespace even if trait jars enter the classpath.</li>
+  <li><strong>End-to-end verified:</strong> <code>GET :8080/menu</code> returns the static menu encoded by Smithy's <code>JsonCodec</code>; <code>POST :8080/menu/echo</code> deserializes a posted <code>Menu</code> and round-trips it back.</li>
+</ul>
+
+<h2>What the extension is, in one paragraph</h2>
+
+<p>
+  Build-time, the extension provides a <code>CodeGenProvider</code> that runs
+  <code>JavaCodegenPlugin</code> in-process during <code>quarkusGenerateCode</code> and
+  drops the output into Quarkus's <code>build/classes/java/quarkus-generated-sources/smithy/</code>
+  directory, which <code>compileJava</code> picks up automatically. Runtime, it provides
+  a 30-line CDI bean (<code>SmithyServerLifecycle</code>) that observes
+  <code>StartupEvent</code> and <code>ShutdownEvent</code> and starts/shuts down every
+  <code>Server</code> bean it finds via <code>Instance&lt;Server&gt;</code>. That's it.
+</p>
+
+<h2>What it's not</h2>
+
+<ul>
+  <li><strong>Not a code generator.</strong> The actual Smithy-Java codegen (<code>JavaCodegenPlugin</code>) is unchanged; the extension just calls it from Quarkus's build hooks.</li>
+  <li><strong>Not a runtime framework.</strong> Generated code is identical whether you use this extension or <code>smithy-base</code>. Switching does not change wire behavior.</li>
+  <li><strong>Not opinionated about transports.</strong> Server-bean apps still own their own Netty listener on a separate port. A unified-server mode (Smithy operations dispatched from Quarkus's Vert.x router) is named in <code>CONTEXT.md</code> as deferred future work.</li>
+  <li><strong>Not a dependency injection layer for operations.</strong> Operation impls are wired in user code via the generated builder; no <code>@SmithyService</code> annotation discovery.</li>
+</ul>
+
+<p class="meta">
+  Generated 2026-05-19 from <code>smithy-java/quarkus-smithy/</code> at experimental status.
+  See the workspace ADRs (<code>docs/adr/0001</code>–<code>0004</code>) for design rationale.
+</p>
+
+</body>
+</html>
