@@ -19,6 +19,23 @@ extra["moduleName"] = "software.amazon.smithy.java.quarkus.runtime"
 
 val quarkusPlatformVersion = "3.35.3"
 
+// Override the JDK 21 default from smithy-java.java-conventions: the Quarkus
+// extension targets JDK 25.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+tasks.withType<JavaCompile> {
+    options.release.set(25)
+}
+
+// SpotBugs 4.8.x cannot parse Java 25 (class file 69) bytecode. Bump locally.
+spotbugs {
+    toolVersion = "4.9.8"
+}
+
 // Tell the io.quarkus.extension plugin which sibling project provides our
 // deployment artifact. The plugin writes this into quarkus-extension.properties
 // for Quarkus's bootstrap to resolve at build time.
