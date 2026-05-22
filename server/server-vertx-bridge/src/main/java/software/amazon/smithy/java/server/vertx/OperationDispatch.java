@@ -96,22 +96,30 @@ final class OperationDispatch implements Handler<RoutingContext> {
         // Some protocols (e.g., AwsRestJson1Protocol) read state from
         // the request context that they populate inside resolveOperation
         // — concretely, restJson1's ValuedMatch holding @httpLabel
-        // bindings. The bridge dispatches by route enumeration but
-        // still needs to populate that state, so we run resolveOperation
-        // here and fall back to the route-known operation if the
-        // protocol returns null. A null result with the wrong
-        // smithy-protocol header (rpcv2 mismatch) means 404.
+        // bindings. Other protocols select the operation from headers
+        // rather than from the URI (e.g., the protocol-test harness's
+        // DelegatingServerProtocol, which keys off
+        // x-protocol-test-operation). The bridge dispatches by route
+        // enumeration but still needs to run resolveOperation per
+        // request to populate context AND to pick the operation when
+        // the route is shared across operations. We use the
+        // resolution result's operation — not the bind-time-pinned
+        // one — so header-routed protocols work. For URI-routed
+        // protocols (restJson1, rpcv2) the result's operation equals
+        // the pinned one, so behavior is unchanged.
         var resolutionRequest = new ServiceProtocolResolutionRequest(
                 uri,
                 requestHeaders,
                 smithyRequest.context(),
                 rc.request().method().name());
         ServerProtocol selectedProtocol = null;
+        Operation<? extends SerializableStruct, ? extends SerializableStruct> selectedOperation = operation;
         for (ServerProtocol p : protocols) {
             try {
                 var resolved = p.resolveOperation(resolutionRequest, List.of(service));
                 if (resolved != null) {
                     selectedProtocol = p;
+                    selectedOperation = resolved.operation();
                     break;
                 }
             } catch (UnknownOperationException e) {
@@ -127,7 +135,7 @@ final class OperationDispatch implements Handler<RoutingContext> {
         var smithyResponse = new HttpResponse(new VertxResponseHeaders());
 
         @SuppressWarnings({"rawtypes", "unchecked"})
-        HttpJob job = new HttpJob((Operation) operation, selectedProtocol, smithyRequest, smithyResponse);
+        HttpJob job = new HttpJob((Operation) selectedOperation, selectedProtocol, smithyRequest, smithyResponse);
 
         // Capture the Vert.x context now (request-side, on the event
         // loop) so the writeResponse callback — which runs on the
