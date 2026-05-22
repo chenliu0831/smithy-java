@@ -5,9 +5,7 @@
 
 package software.amazon.smithy.java.protocoltests.harness;
 
-import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.util.*;
 import java.util.function.Predicate;
@@ -31,7 +29,6 @@ import software.amazon.smithy.java.core.schema.Schema;
 import software.amazon.smithy.java.core.schema.SerializableStruct;
 import software.amazon.smithy.java.core.schema.ShapeBuilder;
 import software.amazon.smithy.java.logging.InternalLogger;
-import software.amazon.smithy.java.server.Server;
 import software.amazon.smithy.java.server.Service;
 import software.amazon.smithy.model.Model;
 import software.amazon.smithy.model.knowledge.ServiceIndex;
@@ -154,7 +151,8 @@ public final class ProtocolTestExtension implements BeforeAllCallback, AfterAllC
 
                 Service createdService = (Service) builderStageClass.getMethod("build").invoke(builder);
 
-                var endpoint = URI.create("http://localhost:" + getFreePort());
+                ServiceHost host = lookupServiceHost();
+                URI endpoint = host.start(createdService);
 
                 context.getStore(namespace.append(context.getUniqueId()))
                         .put(
@@ -164,18 +162,7 @@ public final class ProtocolTestExtension implements BeforeAllCallback, AfterAllC
                                         protocols,
                                         endpoint));
 
-                var server = Server.builder()
-                        .endpoints(endpoint)
-                        .addService(createdService)
-                        .build();
-                server.start();
-                afterAll = () -> {
-                    try {
-                        server.shutdown().get();
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                };
+                afterAll = host::stop;
             }
         }
     }
@@ -396,11 +383,56 @@ public final class ProtocolTestExtension implements BeforeAllCallback, AfterAllC
         }
     }
 
-    public static int getFreePort() {
-        try (ServerSocket serverSocket = new ServerSocket(0)) {
-            return serverSocket.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+    /**
+     * Resolve the {@link ServiceHost} selected via the
+     * {@code -Dsmithy.protocoltest.host=<name>} system property.
+     * Default {@code "netty"} preserves the harness's pre-ADR-0007
+     * behavior. Discovery is via {@link ServiceLoader}; each impl's
+     * {@link ServiceHost#name()} is matched against the property
+     * value.
+     *
+     * <p>Tries the thread-context classloader first, then falls back
+     * to the harness's own classloader. Mirrors the bridge's
+     * {@code SmithyServiceBridge.loadServerProtocols} pattern:
+     * frameworks like Quarkus partition the runtime classpath under
+     * a custom classloader, and the SPI lookup needs to see whatever
+     * the test runner sees.
+     */
+    private static ServiceHost lookupServiceHost() {
+        String requested = System.getProperty("smithy.protocoltest.host", "netty");
+        var available = new java.util.LinkedHashSet<String>();
+        ClassLoader tccl = Thread.currentThread().getContextClassLoader();
+        if (tccl != null) {
+            ServiceHost found = findHostByName(requested, tccl, available);
+            if (found != null) {
+                return found;
+            }
         }
+        ClassLoader own = ServiceHost.class.getClassLoader();
+        if (own != tccl) {
+            ServiceHost found = findHostByName(requested, own, available);
+            if (found != null) {
+                return found;
+            }
+        }
+        throw new IllegalStateException(
+                "No ServiceHost named '" + requested + "' on the test classpath. "
+                        + "Set -Dsmithy.protocoltest.host to one of: " + available
+                        + ". (Add the host's module as itRuntimeOnly so its "
+                        + "META-INF/services/...ServiceHost registration is visible.)");
+    }
+
+    private static ServiceHost findHostByName(
+            String requested,
+            ClassLoader cl,
+            java.util.Set<String> seen) {
+        for (var provider : ServiceLoader.load(ServiceHost.class, cl)) {
+            String name = provider.name();
+            if (requested.equals(name)) {
+                return provider;
+            }
+            seen.add(name);
+        }
+        return null;
     }
 }

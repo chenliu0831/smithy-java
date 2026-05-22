@@ -80,10 +80,9 @@ final class OperationDispatch implements Handler<RoutingContext> {
 
     @Override
     public void handle(RoutingContext rc) {
-        // The operation's owning service is unambiguous at this point —
-        // the bridge's enumerateRoutes() pinned it. Body buffering uses
-        // BodyHandler (mounted by the bridge); rc.body() is non-null
-        // here for any successful Vert.x BodyHandler upstream.
+        // Body buffering uses BodyHandler (mounted by the bridge);
+        // rc.body() is non-null here for any successful Vert.x
+        // BodyHandler upstream.
         Buffer body = rc.body() == null ? null : rc.body().buffer();
 
         URI uri = parseRequestUri(rc, pathPrefix);
@@ -93,25 +92,41 @@ final class OperationDispatch implements Handler<RoutingContext> {
         byte[] bytes = body == null ? new byte[0] : body.getBytes();
         smithyRequest.setDataStream(DataStream.ofBytes(bytes, requestHeaders.contentType()));
 
-        // Some protocols (e.g., AwsRestJson1Protocol) read state from
-        // the request context that they populate inside resolveOperation
-        // — concretely, restJson1's ValuedMatch holding @httpLabel
-        // bindings. The bridge dispatches by route enumeration but
-        // still needs to populate that state, so we run resolveOperation
-        // here and fall back to the route-known operation if the
-        // protocol returns null. A null result with the wrong
-        // smithy-protocol header (rpcv2 mismatch) means 404.
+        // Two reasons the bridge runs resolveOperation per request
+        // even though routing is by enumeration:
+        //
+        // (1) Some protocols read state from the request context that
+        //     they populate inside resolveOperation. For example,
+        //     restJson1's AwsRestJson1Protocol stores the matched
+        //     ValuedMatch holding @httpLabel bindings; deserializeInput
+        //     reads it back. Without resolveOperation running, those
+        //     bindings are missing and deserialization NPEs.
+        //
+        // (2) Some protocols select the operation from headers rather
+        //     than from the URI — e.g., the protocol-test harness's
+        //     DelegatingServerProtocol keys off the x-protocol-test-*
+        //     header trio. The bridge's bind-time route table pins
+        //     a *placeholder* (service, operation) pair on the route;
+        //     the per-request resolution result is what actually
+        //     determines which operation handler runs.
+        //
+        // Net: we always trust the resolution result's operation, never
+        // the bind-time-pinned one. URI-routed protocols return the
+        // expected operation; header-routed protocols return the right
+        // one per request.
         var resolutionRequest = new ServiceProtocolResolutionRequest(
                 uri,
                 requestHeaders,
                 smithyRequest.context(),
                 rc.request().method().name());
         ServerProtocol selectedProtocol = null;
+        Operation<? extends SerializableStruct, ? extends SerializableStruct> selectedOperation = null;
         for (ServerProtocol p : protocols) {
             try {
                 var resolved = p.resolveOperation(resolutionRequest, List.of(service));
                 if (resolved != null) {
                     selectedProtocol = p;
+                    selectedOperation = resolved.operation();
                     break;
                 }
             } catch (UnknownOperationException e) {
@@ -127,7 +142,7 @@ final class OperationDispatch implements Handler<RoutingContext> {
         var smithyResponse = new HttpResponse(new VertxResponseHeaders());
 
         @SuppressWarnings({"rawtypes", "unchecked"})
-        HttpJob job = new HttpJob((Operation) operation, selectedProtocol, smithyRequest, smithyResponse);
+        HttpJob job = new HttpJob((Operation) selectedOperation, selectedProtocol, smithyRequest, smithyResponse);
 
         // Capture the Vert.x context now (request-side, on the event
         // loop) so the writeResponse callback — which runs on the

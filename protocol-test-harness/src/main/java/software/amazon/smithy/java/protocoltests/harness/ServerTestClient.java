@@ -19,6 +19,23 @@ import software.amazon.smithy.java.io.datastream.DataStream;
 final class ServerTestClient {
     private static final ConcurrentHashMap<URI, ServerTestClient> CLIENTS = new ConcurrentHashMap<>();
 
+    /**
+     * Toggle for per-request wire instrumentation. When enabled, every
+     * request (and response status) is printed to stderr so a CI log
+     * captures exactly what the harness sent the host under test —
+     * including method, full URI, body length, and headers (with
+     * sensitive values redacted). Off by default to avoid drowning
+     * the ~350-test protocol-compliance run; flip on per Gradle task
+     * via {@code -Dsmithy.protocoltest.trace=true}.
+     *
+     * <p>Stderr rather than {@link InternalLogger} because the latter
+     * goes through JUL → Gradle's test-output filter, which has
+     * historically dropped events at info/debug levels depending on
+     * the consumer's logging.properties. Stderr always survives in
+     * Gradle's test STANDARD_ERROR stream.
+     */
+    private static final boolean TRACE = Boolean.getBoolean("smithy.protocoltest.trace");
+
     private final URI endpoint;
     private final HttpClient httpClient;
 
@@ -51,10 +68,14 @@ final class ServerTestClient {
             }
         });
 
+        java.net.http.HttpRequest jdkRequest = httpRequestBuilder.build();
+        traceRequest(request, jdkRequest);
+
         try {
             var response = httpClient.send(
-                    httpRequestBuilder.build(),
+                    jdkRequest,
                     java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            traceResponse(response);
             return HttpResponse.create()
                     .setStatusCode(response.statusCode())
                     .setBody(DataStream.ofBytes(response.body()))
@@ -64,5 +85,34 @@ final class ServerTestClient {
         } catch (InterruptedException | IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static void traceRequest(HttpRequest smithyRequest, java.net.http.HttpRequest jdkRequest) {
+        if (!TRACE) {
+            return;
+        }
+        var path = jdkRequest.uri().getRawPath();
+        var query = jdkRequest.uri().getRawQuery();
+        var pathAndQuery = (path == null || path.isEmpty() ? "/" : path) + (query == null ? "" : "?" + query);
+        var headers = new java.util.TreeMap<String, String>();
+        jdkRequest.headers().map().forEach((k, vs) -> headers.put(k.toLowerCase(java.util.Locale.ROOT),
+                String.join(",", vs)));
+        System.err.println("[harness-trace] -> "
+                + jdkRequest.method() + " " + pathAndQuery
+                + " body=" + smithyRequest.contentLength(0L) + "B"
+                + " headers=" + headers);
+    }
+
+    private static void traceResponse(java.net.http.HttpResponse<byte[]> response) {
+        if (!TRACE) {
+            return;
+        }
+        var headers = new java.util.TreeMap<String, String>();
+        response.headers().map().forEach((k, vs) -> headers.put(k.toLowerCase(java.util.Locale.ROOT),
+                String.join(",", vs)));
+        System.err.println("[harness-trace] <- "
+                + response.statusCode()
+                + " body=" + (response.body() == null ? 0 : response.body().length) + "B"
+                + " headers=" + headers);
     }
 }

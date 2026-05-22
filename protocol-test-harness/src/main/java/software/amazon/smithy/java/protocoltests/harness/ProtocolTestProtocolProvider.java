@@ -16,6 +16,7 @@ import software.amazon.smithy.java.core.schema.SerializableStruct;
 import software.amazon.smithy.java.server.Service;
 import software.amazon.smithy.java.server.core.Job;
 import software.amazon.smithy.java.server.core.ProtocolResolver;
+import software.amazon.smithy.java.server.core.RouteSpec;
 import software.amazon.smithy.java.server.core.ServerProtocol;
 import software.amazon.smithy.java.server.core.ServerProtocolProvider;
 import software.amazon.smithy.java.server.core.ServiceProtocolResolutionRequest;
@@ -44,9 +45,11 @@ public class ProtocolTestProtocolProvider implements ServerProtocolProvider {
         private static final Context.Key<ServerProtocol> PROTOCOL_TO_TEST = Context.key("protocol-to-test");
 
         private final Map<ShapeId, ServerProtocol> delegateProtocols;
+        private final List<Service> services;
 
         public DelegatingServerProtocol(List<Service> candidateServices) {
             super(candidateServices);
+            this.services = List.copyOf(candidateServices);
             delegateProtocols = ServiceLoader.load(
                     ServerProtocolProvider.class,
                     ProtocolResolver.class.getClassLoader())
@@ -62,6 +65,50 @@ public class ProtocolTestProtocolProvider implements ServerProtocolProvider {
         @Override
         public ShapeId getProtocolId() {
             return ShapeId.from("");
+        }
+
+        /**
+         * Mounts a single bridge route at {@code POST /} per registered
+         * service so the harness's {@code HttpServerResponseProtocolTestProvider}
+         * probes — which target the bare endpoint and identify the
+         * operation by {@code x-protocol-test-*} headers — actually
+         * reach a Vert.x route. Without this override the bridge
+         * installs no route for {@code /}, Vert.x falls through to its
+         * default 404 handler, and every server-side response test
+         * fails on the harness 404 page rather than the protocol-under-
+         * test's actual response.
+         *
+         * <p>The {@code operation} field on {@link RouteSpec} carries
+         * the service's first operation as a placeholder; the real
+         * operation is selected per-request by
+         * {@link #resolveOperation} from the test headers, and
+         * {@code OperationDispatch} uses the resolver's choice instead
+         * of the bind-time-pinned placeholder.
+         *
+         * <p>Pre-ADR-0008 patch. Becomes dead code (and gets deleted)
+         * once the bridge moves to a single catch-all route +
+         * {@code ProtocolResolver}, since the resolver invokes
+         * {@code resolveOperation} for every request regardless of
+         * URI.
+         */
+        @Override
+        public List<RouteSpec> enumerateRoutes() {
+            // Emit exactly one route covering all candidate services.
+            // Multiple RouteSpecs sharing (POST, /) but pointing at
+            // different (service, operation) pairs would trip the
+            // bridge's bind-time collision detector, even though we
+            // semantically claim *all* of them via headers, not just
+            // one. The dispatcher uses the resolver's chosen
+            // operation (see OperationDispatch.handle) so the
+            // placeholder service/operation here is functionally
+            // ignored at request time.
+            for (Service service : services) {
+                var ops = service.getAllOperations();
+                if (!ops.isEmpty()) {
+                    return List.of(new RouteSpec("POST", "/", service, ops.iterator().next()));
+                }
+            }
+            return List.of();
         }
 
         @Override
