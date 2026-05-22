@@ -1,217 +1,137 @@
 # Quarkus Smithy Extension
 
-The experimental extension that integrates Smithy-Java code generation and the
-`software.amazon.smithy.java.server.Server` runtime into Quarkus applications.
-Terminology here disambiguates concepts that appear under the same English word
-inside a single Quarkus JVM.
+The Quarkus extension that integrates Smithy-Java codegen and the
+Vert.x-bridge-mounted server runtime into Quarkus applications.
+Terminology here disambiguates concepts that appear under the same
+English word inside a single Quarkus JVM.
 
 ## Language
 
 ### Servers and listeners
 
-**Smithy server**:
-An instance of `software.amazon.smithy.java.server.Server`. Owns its own Netty
-listener, port, and lifecycle.
-_Avoid_: "the server" without qualifier when the Quarkus HTTP server is also
-in scope.
-
 **Quarkus HTTP server**:
 The Vert.x-based HTTP server provided by `quarkus-vertx-http`. Hosts
-`/q/dev`, `/q/health`, and other management endpoints. Runs on a different
-port than the Smithy server. The extension does not interact with it.
-_Avoid_: "Vert.x server", "HTTP server" without qualifier.
+the user's Smithy operations (mounted by this extension), plus
+`/q/dev`, `/q/health`, REST endpoints, etc. Smithy operations share
+this server's port (per ADR-0003).
 
-**Smithy server lifecycle**:
-The CDI bean (`SmithyServerLifecycle`) that calls `Server.start()` on
-`StartupEvent` and `Server.shutdown()` on `ShutdownEvent` for every Smithy
-server bean discovered by Arc.
+**Vert.x bridge**:
+The upstream module `:server:server-vertx-bridge` that this extension
+consumes. Walks each `Service` bean's operations, derives the route
+from the protocol (restJson1 `@http(method, uri)` or rpcv2
+`POST /service/<Name>/operation/<Op>`), and registers each as a
+typed Vert.x route on Quarkus's `Router`. See ADR-0006 for the
+public API (`SmithyServiceBridge`, `BoundBridge`, `BridgeOptions`).
 
-**Separate-server mode**:
-The arrangement in which the Smithy server and the Quarkus HTTP server bind
-independent ports. This is the only mode supported today.
-_Avoid_: "two-port mode", "dual-server mode".
-
-**Unified-server mode**:
-The hypothetical arrangement in which Smithy operations are dispatched from
-the Quarkus HTTP server's Vert.x router on the same port. Not implemented.
-Named here only so future discussion has a stable label; the equivalent in
-`quarkus-grpc` is `quarkus.grpc.server.use-separate-server=false`.
-Reaching this mode requires a **Vert.x ServerProvider** (transport-side
-prerequisite) and a **server-side interceptor SPI** (auth-side prerequisite);
-see [ADR-0003](../../docs/adr/0003-defer-shared-transport-and-interceptor-spi.md).
-
-**Vert.x ServerProvider**:
-A hypothetical `software.amazon.smithy.java.server.ServerProvider`
-implementation whose transport is Vert.x rather than Netty — the missing
-SPI binding that would let a Smithy `Server` mount on the Quarkus HTTP
-server's `Router` instead of owning its own listener. Today the only impl
-is `NettyServerProvider` from `:server:server-netty`. Could live inside
-`quarkus-smithy` itself (no upstream change required); deliberately
-deferred during the experimental phase.
-_Avoid_: "Vert.x transport", "router-mounted server" — both ambiguous.
-
-**Server-side interceptor SPI**:
-A hypothetical extension point in `:server:server-api` that lets third
-parties inject before/after-operation behavior — the Smithy analog of
-gRPC's `ServerInterceptor` or Quarkus REST's `Filter`. Today
-`server-api` exposes only `OperationFilters` (allow/blocklist by
-operation name) and a stub `RequestContext`; there is no place to
-attach a `SecurityIdentity`, a metrics tap, or a request log. Required
-upstream for Quarkus-native auth integration regardless of transport.
-_Avoid_: confusing with Smithy's existing client-side `ClientInterceptor`
-surface; this is the server analog, which does not yet exist.
+**Smithy server (deprecated)**:
+The previous architecture, before ADR-0003. Was a separate
+`software.amazon.smithy.java.server.Server` (Netty) instance owning
+its own listener and port. No longer present in `quarkus-smithy`.
+_Avoid_: this term referring to anything in the current architecture.
 
 ### Programming model
 
-The extension's `CodeGenProvider` is **mode-agnostic**: it runs whatever
-`modes` (`client`, `server`, `types`) the user puts in `smithy-build.json`.
-The four models below name the user-side shapes that result. Three are
-supported today; two are named-but-deferred so that future discussion has
-stable labels.
+The extension is a **server extension**. The supported user-facing
+programming model is the Service-bean model.
 
-**Server-bean model** (supported):
-The user supplies a CDI producer method that returns a fully built
-`Server` (Netty), built from `modes: ["server"]` codegen output. The
-extension manages its lifecycle.
-_Was previously called_: "@Produces Server" model.
-_Avoid_: "manual server", "explicit server".
-
-**Typed-client model** (supported):
-The user generates a Smithy client (`modes: ["client"]`) and exposes it as
-a CDI bean via a `@Produces` method. There is no Smithy server bean. The
-**Smithy server lifecycle** finds zero `Server` beans and is a no-op.
-Demonstrated by `examples/quarkus-client/`.
-
-**Types-only model** (supported):
-The user generates only Smithy data classes (`modes: ["types"]`) and uses
-them however they like — typed JAX-RS payloads, Vert.x route handlers,
-internal DTOs. No Smithy server, no Smithy client. Demonstrated by
-`examples/quarkus-types/`.
-
-**External-dispatch model** (named, deferred):
-The hypothetical model in which the user generates `modes: ["server"]`
-operation interfaces but dispatches them from somewhere other than
-`software.amazon.smithy.java.server.Server` — e.g., a Vert.x route, a
-JAX-RS resource, an MCP handler, a Lambda handler. Not demonstrated as an
-example because Smithy-Java does not yet ship a non-Netty `Service`
-adapter; users would have to hand-roll the dispatcher today. Adjacent to
-**unified-server mode** but distinct: unified-server mode is a
-single-port arrangement that still goes through `Server`, while
-external-dispatch bypasses `Server` entirely.
+**Service-bean model** (supported, the canonical pattern):
+The user supplies a CDI producer method that returns a built
+`software.amazon.smithy.java.server.Service` (the generated service
+stub from `modes: ["server"]` codegen output). The extension
+discovers every `@Produces Service` bean and mounts each operation
+on Quarkus's main HTTP router via the upstream
+`:server:server-vertx-bridge` module. There is **no separate Smithy
+listener**; operations share the Quarkus HTTP server's port.
+_Replaces (per ADR-0003 + ADR-0006)_: "Server-bean model", "@Produces
+Server" model.
+_Avoid_: "manual server", "explicit server", "two-port mode".
 
 **Annotation-discovery model** (named, deferred):
-The hypothetical future programming model in which a CDI annotation (e.g.
-`@SmithyService`) marks operation implementations and the extension builds
-the `Server` itself, analogous to `quarkus-grpc`'s `@GrpcService`. Not
-implemented; called out so that "the model we did not pick" has a name.
+The hypothetical future programming model in which a CDI annotation
+(e.g. `@SmithyService`) marks operation implementations and the
+extension builds the `Service` itself, analogous to `quarkus-grpc`'s
+`@GrpcService`. Not implemented; called out so that "the model we did
+not pick" has a name.
 
-**Pre-configured-builder model** (named, deferred):
-The variant of **Server-bean model** in which the extension produces a
-`ServerBuilder<?>` already populated from `quarkus.smithy.server.*`
-keys; the user's producer method reads
-`Server server(ServerBuilder<?> builder)` and only adds services before
-calling `.build()`. Compatible with ADR-0001 (user still owns `Server`
-construction). Deferred because Smithy-Java's `ServerBuilder` exposes
-only `endpoints` and `numberOfWorkers` today — a richer set of upstream
-setters (TLS, request timeouts, max-message-size, graceful-shutdown
-grace) is the precondition for the abstraction being worth introducing.
-Will be revisited when upstream grows those setters.
-_Avoid_: "config-driven model" — every model can be config-driven by
-having the user inject `@ConfigProperty`; the distinguishing trait of
-this model is who owns the URI assembly.
+**Typed-client model** (future direction, not shipped):
+Generate a Smithy client (`modes: ["client"]`) and expose it as a CDI
+bean. The `CodeGenProvider` is mode-agnostic and will emit client
+code on demand, but the extension does not surface a documented
+runtime path for this pattern. The recorder's no-Service
+short-circuit is the only current accommodation.
+_Avoid_: treating this as a supported programming model; it is a
+forward-looking direction only.
+
+**Types-only model** (future direction, not shipped):
+Generate Smithy POJOs (`modes: ["types"]`) and use them as you like.
+Same status as Typed-client — codegen runs, no runtime story is
+shipped.
+_Avoid_: treating this as a supported programming model.
 
 ### Smithy concepts (as used inside this extension)
 
 **Smithy `Service`**:
-A generated stub class corresponding to a `service` shape in the user's
-`.smithy` model. The user attaches operation implementations to it via its
-builder.
+The generated service stub class corresponding to a `service` shape in
+the user's `.smithy` model. The user attaches operation implementations
+to it via its builder (`CoffeeShop.builder().addCreateOrderOperation(...).build()`).
+The extension's recorder discovers `Service` instances via
+`Instance<Service>` and hands them to the Vert.x bridge.
 
 **Smithy operation**:
 A generated interface for a single RPC, implemented by the user. The
-implementation class is referenced by name in the `Server.builder()` call
-inside the `@Produces Server` method.
+implementation class is referenced by name in the
+`<ServiceName>.builder().add<OperationName>Operation(...)` chain inside
+the user's `@Produces Service` method.
 
 **`java-codegen` plugin**:
 The Smithy build plugin (from `:codegen:codegen-plugin`) that turns
 `.smithy` shapes into Java source. The extension only honors this plugin
 inside `smithy-build.json`; `smithy-base` Gradle plugin wiring is
-intentionally not used.
+intentionally not used. The plugin is **mode-agnostic**: whatever
+`modes` (`server`, `client`, `types`) the user puts in
+`smithy-build.json` is what's emitted.
 
 ## Relationships
 
-- A Quarkus application has zero or more **Smithy server** beans and exactly
-  one **Quarkus HTTP server**.
-- The **Smithy server lifecycle** observes Quarkus startup and shutdown
-  events; it does not interact with the **Quarkus HTTP server**. When zero
-  **Smithy server** beans exist (e.g. **Typed-client model**,
-  **Types-only model**), it is silently a no-op — Smithy-side codegen
-  still runs.
-- The **Server-bean model**, **Typed-client model**, and **Types-only model**
-  are supported today; the **External-dispatch model**,
-  **Annotation-discovery model**, and **Pre-configured-builder model** are
-  named to mark boundaries, not because they exist.
-- The **Pre-configured-builder model** is the closest variant to the
-  current **Server-bean model** — it differs only in who reads the
-  `quarkus.smithy.server.*` keys. Picking it up later requires no change
-  to ADR-0001.
-- The extension is in **separate-server mode** by construction;
-  **unified-server mode** is not reachable until both prerequisites land:
-  a **Vert.x ServerProvider** (which we could write inside this extension)
-  and a **server-side interceptor SPI** (which has to land upstream in
-  `:server:server-api`). Both are deferred during the experimental phase;
-  see [ADR-0003](../../docs/adr/0003-defer-shared-transport-and-interceptor-spi.md).
-  **Unified-server mode** and **External-dispatch model** are distinct
-  — see their definitions above.
+- A Quarkus application has zero or more `@Produces Service` beans and
+  exactly one Quarkus HTTP server.
+- The `SmithyVertxRecorder` runs at `RUNTIME_INIT`, walks
+  `Instance<Service>`, and either mounts the bridge (one or more
+  Service beans) or short-circuits with an INFO log (zero beans —
+  e.g. an app that depends on `quarkus-smithy` only for codegen).
+- The `Annotation-discovery model` is named to mark a boundary, not
+  because it exists.
 
 ## Example dialogue
 
-> **Dev:** "Where does the request hit first — the **Quarkus HTTP server** or
-> the **Smithy server**?"
-> **Domain expert:** "They're separate listeners on separate ports. A `curl`
-> against `:8888` lands on the **Smithy server**'s Netty stack. A `curl`
-> against `:8080/q/health` hits the **Quarkus HTTP server**'s Vert.x router.
-> The two never share a request."
+> **Dev:** "I have a Smithy service and want it served by my Quarkus
+> app. What do I produce?"
+> **Domain expert:** "A `@Produces Service` bean. The extension mounts
+> every operation on Quarkus's HTTP server automatically — no separate
+> port, no `Server.builder()`. See `examples/quarkus-server/`."
 
-> **Dev:** "Why don't we discover operation impls via a `@SmithyService`
-> annotation like `quarkus-grpc` does?"
-> **Domain expert:** "That's the **annotation-discovery model**. We
-> deliberately stayed on the **Server-bean model** during the
-> experimental phase: the producer body is byte-identical to the upstream
-> `BasicServerExample.run()`, so users learning Smithy-Java only have to
-> learn Quarkus's `@Produces` wrapper. Annotation discovery is the next
-> ergonomic step once codegen stabilizes."
+> **Dev:** "Can I have two Smithy services in the same Quarkus app?"
+> **Domain expert:** "Yes — produce two `@Produces Service` beans. The
+> bridge composes them on the same router; `@http` collisions across
+> services fail-fast at bind time. See ADR-0006."
 
-> **Dev:** "I just want a Smithy *client* in my Quarkus app. Do I still
-> need the Server lifecycle bean?"
-> **Domain expert:** "That's the **Typed-client model**. The lifecycle
-> bean is harmless — `Instance<Server>` resolves to nothing and the
-> startup/shutdown observers no-op. You generate `modes: [\"client\"]`,
-> publish the generated client via your own `@Produces` method, and
-> inject it wherever you need it. See `examples/quarkus-client/`."
-
-> **Dev:** "I only want the Smithy types as POJOs for my JAX-RS
-> endpoints. Is that supported?"
-> **Domain expert:** "Yes — that's the **Types-only model**. Use
-> `modes: [\"types\"]` in `smithy-build.json`. You don't even need
-> `server-api` or `client-core` on the runtime classpath; just `core`
-> (transitive from anything you generate). See
-> `examples/quarkus-types/`. If you also want Smithy's serdes (rather
-> than Jackson) on the wire, that's still **Types-only** — the model
-> name describes what's *generated*, not how the bytes are encoded."
+> **Dev:** "Where's the URL of my Smithy server?"
+> **Domain expert:** "There isn't a separate one. Smithy operations
+> live on Quarkus's HTTP server — `quarkus.http.host`/`quarkus.http.port`
+> control the listener. To put Smithy operations under a sub-tree, set
+> `quarkus.smithy.server.path-prefix=/api/smithy`."
 
 ## Flagged ambiguities
 
-- "Server" was used in the README and code comments to mean both the
-  **Smithy server** and the **Quarkus HTTP server**. Resolution: these are
-  distinct, named separately, and the unqualified word "server" should be
-  avoided when both are in scope.
-- "Service" can mean a Smithy `service` shape, a Smithy `Service` generated
-  stub, or a CDI `@ApplicationScoped` bean. Resolution: only the first two
-  are project-specific; CDI services are referred to as "beans".
-- "@Produces Server model" was previously used as the only programming-model
-  name. Once **Typed-client model** and **Types-only model** were named, the
-  term was renamed to **Server-bean model** so that all programming-model
-  names parallel each other (server-bean, typed-client, types-only,
-  external-dispatch, annotation-discovery). Old references in ADR-0001 are
-  preserved for historical accuracy; new prose uses the new name.
+- "Server" used to mean both the (now-removed) Smithy Netty listener
+  and the Quarkus HTTP server. Resolution: there is only one server
+  now (Quarkus HTTP), and we don't say "Smithy server" anymore.
+- "Service" can mean a Smithy `service` shape, a Smithy `Service`
+  generated stub, or a CDI `@ApplicationScoped` bean. Resolution: we
+  use "Service" only for the generated stub (the type returned by the
+  user's `@Produces` method); Smithy `service` shape is the model-side
+  noun; CDI services are referred to as "beans".
+- "@Produces Server" was the user-facing producer pattern in earlier
+  experimental releases. ADR-0003 and ADR-0006 superseded it with
+  `@Produces Service`. Old references in ADR-0001 are preserved for
+  historical accuracy; new prose uses the new name.

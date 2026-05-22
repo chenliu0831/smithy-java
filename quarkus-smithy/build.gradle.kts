@@ -44,14 +44,19 @@ quarkusExtension {
 }
 
 dependencies {
-    // Quarkus core: StartupEvent / ShutdownEvent + Arc CDI.
+    // Quarkus core + Arc CDI.
     implementation(platform("io.quarkus.platform:quarkus-bom:$quarkusPlatformVersion"))
     implementation("io.quarkus:quarkus-arc")
+    // The bridge mounts on quarkus-vertx-http's main Router. This dep
+    // is what gives users one ingress port (per ADR-0003).
+    implementation("io.quarkus:quarkus-vertx-http")
 
-    // Smithy-Java server runtime API (Server, Service, RequestContext).
+    // Smithy-Java server runtime API (Service, Operation, RequestContext)
+    // and the Vert.x bridge module that mounts services on a Router.
     api(project(":server:server-api"))
+    api(project(":server:server-vertx-bridge"))
 
-    // For InternalLogger used by SmithyServerLifecycle.
+    // For InternalLogger used by the recorder.
     implementation(project(":logging"))
 
     // For @SmithyUnstableApi on package-info.

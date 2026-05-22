@@ -32,6 +32,7 @@ import software.amazon.smithy.java.server.Operation;
 import software.amazon.smithy.java.server.Service;
 import software.amazon.smithy.java.server.core.HttpJob;
 import software.amazon.smithy.java.server.core.Job;
+import software.amazon.smithy.java.server.core.RouteSpec;
 import software.amazon.smithy.java.server.core.ServerProtocol;
 import software.amazon.smithy.java.server.core.ServiceProtocolResolutionRequest;
 import software.amazon.smithy.java.server.core.ServiceProtocolResolutionResult;
@@ -47,11 +48,20 @@ final class AwsRestJson1Protocol extends ServerProtocol {
     private final Codec codec;
     private final Map<String, UriMatcherMap<Operation<?, ?>>> httpMethodToMatchersMap;
     private final HttpBinding httpBinding = new HttpBinding();
+    private final List<RouteSpec> routes;
 
     AwsRestJson1Protocol(List<Service> services) {
         super(services);
+        var routesList = new java.util.ArrayList<RouteSpec>();
         var httpMethodToMatchers = new HashMap<String, UriMatcherMapBuilder<Operation<?, ?>>>();
         for (Service service : services) {
+            // restJson1 only owns operations with an @http trait — the
+            // inner-loop httpTrait check below naturally excludes
+            // operations that belong to other protocols. Filtering by
+            // service-level protocol trait was tried but doesn't work:
+            // codegen-generated services may carry no traits on the
+            // service schema (the protocol shows up only on operations
+            // and members).
             for (var operation : service.getAllOperations()) {
                 // Only process operations with HTTP trait.
                 var httpTrait = operation.getApiOperation()
@@ -66,6 +76,7 @@ final class AwsRestJson1Protocol extends ServerProtocol {
                         .toString();
                 httpMethodToMatchers.computeIfAbsent(method, k -> UriTreeMatcherMap.builder())
                         .add(UriPattern.forSpecificityRouting(pattern), operation);
+                routesList.add(new RouteSpec(method, smithyToVertxPath(pattern), service, operation));
             }
         }
         this.httpMethodToMatchersMap = httpMethodToMatchers.entrySet()
@@ -75,6 +86,50 @@ final class AwsRestJson1Protocol extends ServerProtocol {
                 .useJsonName(true)
                 .useTimestampFormat(true)
                 .build();
+        this.routes = List.copyOf(routesList);
+    }
+
+    @Override
+    public List<RouteSpec> enumerateRoutes() {
+        return routes;
+    }
+
+    /**
+     * Translate a Smithy URI pattern to Vert.x route syntax. Smithy uses
+     * {@code /order/{id}} (and {@code /order/{id+}} for greedy labels);
+     * Vert.x uses {@code /order/:id} (and {@code /order/*} for greedy
+     * tails).
+     */
+    private static String smithyToVertxPath(String smithyPattern) {
+        // Strip query string portion if present; Vert.x routes match
+        // path only, query handled by the underlying request.
+        int qIdx = smithyPattern.indexOf('?');
+        String path = qIdx >= 0 ? smithyPattern.substring(0, qIdx) : smithyPattern;
+        StringBuilder out = new StringBuilder(path.length());
+        int i = 0;
+        while (i < path.length()) {
+            char c = path.charAt(i);
+            if (c == '{') {
+                int end = path.indexOf('}', i);
+                if (end < 0) {
+                    throw new IllegalArgumentException("Unterminated label in Smithy URI pattern: " + smithyPattern);
+                }
+                String label = path.substring(i + 1, end);
+                if (label.endsWith("+")) {
+                    // Greedy label: Vert.x has no per-segment greedy syntax,
+                    // so use trailing wildcard. Any operation using a greedy
+                    // label must be the last segment of the pattern.
+                    out.append('*');
+                } else {
+                    out.append(':').append(label);
+                }
+                i = end + 1;
+            } else {
+                out.append(c);
+                i++;
+            }
+        }
+        return out.toString();
     }
 
     @Override

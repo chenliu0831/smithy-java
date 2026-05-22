@@ -16,6 +16,7 @@ import software.amazon.smithy.java.io.ByteBufferOutputStream;
 import software.amazon.smithy.java.io.datastream.DataStream;
 import software.amazon.smithy.java.server.Service;
 import software.amazon.smithy.java.server.core.Job;
+import software.amazon.smithy.java.server.core.RouteSpec;
 import software.amazon.smithy.java.server.core.ServerProtocol;
 import software.amazon.smithy.java.server.core.ServiceProtocolResolutionRequest;
 import software.amazon.smithy.java.server.core.ServiceProtocolResolutionResult;
@@ -39,6 +40,7 @@ public abstract class AbstractRpcV2ServerProtocol extends ServerProtocol {
     private final String payloadMediaType;
     private final String smithyProtocolValue;
     private final boolean allowFullyQualifiedService;
+    private final List<Service> services;
 
     /**
      * @param services         the list of services this protocol handles
@@ -63,6 +65,48 @@ public abstract class AbstractRpcV2ServerProtocol extends ServerProtocol {
         this.smithyProtocolValue = SMITHY_PROTOCOL_PREFIX
                 + payloadMediaType.substring(MEDIA_TYPE_PREFIX_LENGTH);
         this.allowFullyQualifiedService = allowFullyQualifiedService;
+        this.services = services;
+    }
+
+    @Override
+    public List<RouteSpec> enumerateRoutes() {
+        List<RouteSpec> routes = new java.util.ArrayList<>();
+        for (Service service : services) {
+            // Skip services whose operations declare @http — those are
+            // owned by an HTTP-binding protocol like restJson1.
+            // Without this filter, every restJson1 service would also
+            // get phantom POST /service/<Name>/operation/<Op> routes
+            // when both protocol jars coexist on the classpath. The
+            // codegen-generated Service schemas do not carry protocol
+            // traits at the service level, so we have to detect via
+            // operation-level traits.
+            if (serviceHasHttpBoundOperations(service)) {
+                continue;
+            }
+            String serviceName = service.schema().id().getName();
+            for (var operation : service.getAllOperations()) {
+                String operationName = operation.name();
+                String path = "/service/" + serviceName + "/operation/" + operationName;
+                routes.add(new RouteSpec("POST", path, service, operation));
+            }
+        }
+        // Note: rpcv2-cbor and rpcv2-json enumerate identical paths
+        // because both protocols are wire-level distinguished by the
+        // smithy-protocol header, not by URI. The bridge merges
+        // duplicate (method, path) pairs into one Vert.x route whose
+        // handler invokes resolveOperation per request to pick the
+        // matching protocol.
+        return List.copyOf(routes);
+    }
+
+    private static boolean serviceHasHttpBoundOperations(Service service) {
+        for (var op : service.getAllOperations()) {
+            if (op.getApiOperation().schema().hasTrait(
+                    software.amazon.smithy.java.core.schema.TraitKey.HTTP_TRAIT)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Returns the codec used for serialization and deserialization. */

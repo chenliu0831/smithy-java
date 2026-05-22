@@ -30,6 +30,23 @@ public abstract class ServerProtocol {
             List<Service> candidates
     );
 
+    /**
+     * Enumerate the per-operation HTTP routes this protocol owns over the
+     * services it was constructed with. Used by transports that mount
+     * Smithy operations on an externally-managed router (e.g., the
+     * Vert.x bridge) rather than dispatching from a single catch-all
+     * handler. Default returns an empty list; protocols that participate
+     * in router-mountable transports override it.
+     *
+     * <p>Returned paths follow Vert.x-style placeholder syntax
+     * ({@code /order/:id}) so they can be registered directly with a
+     * Vert.x {@code Router}. Smithy {@code @http(uri:"/order/{id}")}
+     * traits translate to {@code /order/:id}.
+     */
+    public List<RouteSpec> enumerateRoutes() {
+        return List.of();
+    }
+
     public abstract CompletableFuture<Void> deserializeInput(Job job);
 
     public final CompletableFuture<Void> serializeOutput(Job job, SerializableStruct output) {
