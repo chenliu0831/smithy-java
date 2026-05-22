@@ -390,20 +390,49 @@ public final class ProtocolTestExtension implements BeforeAllCallback, AfterAllC
      * behavior. Discovery is via {@link ServiceLoader}; each impl's
      * {@link ServiceHost#name()} is matched against the property
      * value.
+     *
+     * <p>Tries the thread-context classloader first, then falls back
+     * to the harness's own classloader. Mirrors the bridge's
+     * {@code SmithyServiceBridge.loadServerProtocols} pattern:
+     * frameworks like Quarkus partition the runtime classpath under
+     * a custom classloader, and the SPI lookup needs to see whatever
+     * the test runner sees.
      */
     private static ServiceHost lookupServiceHost() {
         String requested = System.getProperty("smithy.protocoltest.host", "netty");
-        var available = new java.util.ArrayList<String>();
-        for (var provider : ServiceLoader.load(ServiceHost.class, ServiceHost.class.getClassLoader())) {
-            if (provider.name().equals(requested)) {
-                return provider;
+        var available = new java.util.LinkedHashSet<String>();
+        ClassLoader tccl = Thread.currentThread().getContextClassLoader();
+        if (tccl != null) {
+            ServiceHost found = findHostByName(requested, tccl, available);
+            if (found != null) {
+                return found;
             }
-            available.add(provider.name());
+        }
+        ClassLoader own = ServiceHost.class.getClassLoader();
+        if (own != tccl) {
+            ServiceHost found = findHostByName(requested, own, available);
+            if (found != null) {
+                return found;
+            }
         }
         throw new IllegalStateException(
                 "No ServiceHost named '" + requested + "' on the test classpath. "
                         + "Set -Dsmithy.protocoltest.host to one of: " + available
                         + ". (Add the host's module as itRuntimeOnly so its "
                         + "META-INF/services/...ServiceHost registration is visible.)");
+    }
+
+    private static ServiceHost findHostByName(
+            String requested,
+            ClassLoader cl,
+            java.util.Set<String> seen) {
+        for (var provider : ServiceLoader.load(ServiceHost.class, cl)) {
+            String name = provider.name();
+            if (requested.equals(name)) {
+                return provider;
+            }
+            seen.add(name);
+        }
+        return null;
     }
 }

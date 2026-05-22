@@ -77,15 +77,18 @@ class WireProtocolSelectionTest {
     private static final byte[] TEST1_PROBE_A_BODY = new byte[] {0x7B, 0x7D}; // {}
 
     /**
-     * Test 1 Probe B: rpcv2-cbor success — empty map encoded as a
-     * CBOR indefinite-length map: 0xBF (begin) 0xFF (break). This is
-     * what Smithy-Java's rpcv2-cbor server emits for a zero-member
-     * EchoOutput; clients accept either form (definite 0xA0 or
-     * indefinite 0xBF...0xFF).
+     * Test 1 Probe B and Test 6: rpcv2-cbor success — body must be
+     * a CBOR-encoded empty map. Two equivalent encodings are valid
+     * per RFC 8949: definite-length form {@code 0xA0} (one byte) or
+     * indefinite-length form {@code 0xBF 0xFF} (two bytes — begin
+     * then break). Smithy-Java's CBOR encoder currently emits the
+     * indefinite-length form; tests accept either so an internal
+     * encoder optimization can ship without breaking compliance.
      */
-    private static final int TEST1_PROBE_B_STATUS = 200;
-    private static final String TEST1_PROBE_B_CONTENT_TYPE = "application/cbor";
-    private static final byte[] TEST1_PROBE_B_BODY = new byte[] {(byte) 0xBF, (byte) 0xFF};
+    private static final int CBOR_EMPTY_MAP_STATUS = 200;
+    private static final String CBOR_EMPTY_MAP_CONTENT_TYPE = "application/cbor";
+    private static final byte[] CBOR_EMPTY_MAP_DEFINITE = new byte[] {(byte) 0xA0};
+    private static final byte[] CBOR_EMPTY_MAP_INDEFINITE = new byte[] {(byte) 0xBF, (byte) 0xFF};
 
     /**
      * Test 5 — rpcv2-json success: empty JSON object {} body.
@@ -95,16 +98,6 @@ class WireProtocolSelectionTest {
     private static final int TEST5_STATUS = 200;
     private static final String TEST5_CONTENT_TYPE = "application/json";
     private static final byte[] TEST5_BODY = new byte[] {0x7B, 0x7D};
-
-    /**
-     * Test 6 — rpcv2-cbor still works once rpcv2-json is also
-     * registered. Identical to Test 1 Probe B's golden; this is a
-     * regression check that adding rpcv2-json to the service didn't
-     * break rpcv2-cbor's bucket dispatch.
-     */
-    private static final int TEST6_STATUS = TEST1_PROBE_B_STATUS;
-    private static final String TEST6_CONTENT_TYPE = TEST1_PROBE_B_CONTENT_TYPE;
-    private static final byte[] TEST6_BODY = TEST1_PROBE_B_BODY;
 
     /**
      * Test 4: truly unidentifiable input. No registered protocol
@@ -122,15 +115,20 @@ class WireProtocolSelectionTest {
      * Test 2: a request that *is* claimed by a protocol (rpcv2-json
      * matches the URI shape and the smithy-protocol header), but the
      * body's Content-Type doesn't match the protocol's expected
-     * media type. Netty produces a Smithy-shaped 400 error: JSON
-     * body containing the message "Invalid content type". Because
-     * rpcv2-json owns this request shape, the response is a real
-     * error response, not the bare 404 of unidentified rejection.
+     * media type. The server produces a Smithy-shaped 400 error
+     * with a JSON body that contains a {@code message} member
+     * indicating the failure mode.
+     *
+     * <p>We assert on the parsed JSON shape (status, Content-Type,
+     * "message" field present and matches expected text) rather than
+     * byte-equality so the test isn't broken by whitespace, key
+     * ordering, or future additions to the error envelope. The
+     * exact message wording is Smithy-Java's, not part of the spec —
+     * if Smithy-Java rewords the error, update this expectation.
      */
     private static final int TEST2_STATUS = 400;
     private static final String TEST2_CONTENT_TYPE = "application/json";
-    private static final byte[] TEST2_BODY =
-            "{\"message\":\"Invalid content type\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final String TEST2_EXPECTED_MESSAGE = "Invalid content type";
 
     /** Test 3: identical to Test 1 Probe A. restJson1 claims after rpcv2 declines. */
     private static final int TEST3_STATUS = TEST1_PROBE_A_STATUS;
@@ -146,6 +144,9 @@ class WireProtocolSelectionTest {
 
     @BeforeEach
     void setUp() {
+        // Reset between tests so an earlier test's set("Echo") doesn't
+        // leak into a later test that asserts isNull().
+        lastInvoked.set(null);
         EchoOperation echo = (input, ctx) -> {
             lastInvoked.set("Echo");
             return EchoOutput.builder().build();
@@ -197,8 +198,7 @@ class WireProtocolSelectionTest {
                 .header("smithy-protocol", "rpc-v2-cbor")
                 .build());
 
-        assertResponse("Probe B (rpcv2-cbor)", b,
-                TEST1_PROBE_B_STATUS, TEST1_PROBE_B_CONTENT_TYPE, TEST1_PROBE_B_BODY);
+        assertCborEmptyMapResponse("Probe B (rpcv2-cbor)", b);
         assertThat(lastInvoked.get())
                 .as("Probe B must invoke the modeled operation")
                 .isEqualTo("Echo");
@@ -229,8 +229,8 @@ class WireProtocolSelectionTest {
                 .header("smithy-protocol", "rpc-v2-json")
                 .build());
 
-        assertResponse("rpcv2-json with mismatched Content-Type", response,
-                TEST2_STATUS, TEST2_CONTENT_TYPE, TEST2_BODY);
+        assertJsonErrorResponse("rpcv2-json with mismatched Content-Type", response,
+                TEST2_STATUS, TEST2_CONTENT_TYPE, TEST2_EXPECTED_MESSAGE);
         assertThat(lastInvoked.get())
                 .as("operation handler must not run when body content-type is wrong")
                 .isNull();
@@ -318,8 +318,7 @@ class WireProtocolSelectionTest {
                 .header("smithy-protocol", "rpc-v2-cbor")
                 .build());
 
-        assertResponse("rpcv2-cbor (with rpcv2-json also registered)", response,
-                TEST6_STATUS, TEST6_CONTENT_TYPE, TEST6_BODY);
+        assertCborEmptyMapResponse("rpcv2-cbor (with rpcv2-json also registered)", response);
         assertThat(lastInvoked.get())
                 .as("rpcv2-cbor dispatch must invoke the modeled operation")
                 .isEqualTo("Echo");
@@ -351,6 +350,60 @@ class WireProtocolSelectionTest {
     }
 
     /**
+     * Asserts a CBOR empty-map response. RFC 8949 permits two
+     * encodings: definite-length {@code 0xA0} or indefinite-length
+     * {@code 0xBF 0xFF}. Both are spec-compliant; this assertion
+     * accepts either so a future encoder optimization to emit the
+     * shorter form ships without a test break.
+     */
+    private static void assertCborEmptyMapResponse(String label, HttpResponse<byte[]> actual) {
+        assertThat(actual.statusCode())
+                .as("[%s] status code", label)
+                .isEqualTo(CBOR_EMPTY_MAP_STATUS);
+        assertThat(actual.headers().firstValue("Content-Type"))
+                .as("[%s] Content-Type header", label)
+                .isPresent()
+                .hasValue(CBOR_EMPTY_MAP_CONTENT_TYPE);
+        assertThat(actual.body())
+                .as("[%s] response body must be a CBOR empty map (definite 0xA0 or indefinite 0xBF 0xFF)", label)
+                .satisfiesAnyOf(
+                        body -> assertThat(body).containsExactly(CBOR_EMPTY_MAP_DEFINITE),
+                        body -> assertThat(body).containsExactly(CBOR_EMPTY_MAP_INDEFINITE));
+    }
+
+    /**
+     * Asserts a JSON error response: parsed-JSON equality on the
+     * {@code message} field rather than byte-equality on the whole
+     * body. Tolerates whitespace, key ordering, and future additions
+     * to the error envelope. The error wording itself is asserted
+     * because that's what callers see.
+     */
+    private static void assertJsonErrorResponse(
+            String label,
+            HttpResponse<byte[]> actual,
+            int expectedStatus,
+            String expectedContentType,
+            String expectedMessage) {
+        assertThat(actual.statusCode())
+                .as("[%s] status code", label)
+                .isEqualTo(expectedStatus);
+        assertThat(actual.headers().firstValue("Content-Type"))
+                .as("[%s] Content-Type header", label)
+                .isPresent()
+                .hasValue(expectedContentType);
+        String bodyText = new String(actual.body(), java.nio.charset.StandardCharsets.UTF_8);
+        software.amazon.smithy.model.node.Node parsed;
+        try {
+            parsed = software.amazon.smithy.model.node.Node.parse(bodyText);
+        } catch (RuntimeException e) {
+            throw new AssertionError("[" + label + "] response body is not valid JSON: " + bodyText, e);
+        }
+        assertThat(parsed.expectObjectNode().expectStringMember("message").getValue())
+                .as("[%s] error response 'message' field", label)
+                .isEqualTo(expectedMessage);
+    }
+
+    /**
      * Strict rejection-response assertion: exact status (404), no
      * Content-Type header, empty body. Matches Netty's transport-level
      * "no operation matched" response shape.
@@ -372,15 +425,41 @@ class WireProtocolSelectionTest {
     }
 
     private static ServiceHost lookupHost() {
+        // Mirrors ProtocolTestExtension.lookupServiceHost — TCCL first
+        // (so framework-partitioned classpaths like Quarkus see runtime
+        // jars), then the harness's own classloader. Duplicated here
+        // because this test class doesn't go through @ProtocolTest.
         String requested = System.getProperty("smithy.protocoltest.host", "netty");
-        var available = new java.util.ArrayList<String>();
-        for (var p : ServiceLoader.load(ServiceHost.class, ServiceHost.class.getClassLoader())) {
-            if (p.name().equals(requested)) {
-                return p;
+        var available = new java.util.LinkedHashSet<String>();
+        ClassLoader tccl = Thread.currentThread().getContextClassLoader();
+        if (tccl != null) {
+            ServiceHost found = findByName(requested, tccl, available);
+            if (found != null) {
+                return found;
             }
-            available.add(p.name());
+        }
+        ClassLoader own = ServiceHost.class.getClassLoader();
+        if (own != tccl) {
+            ServiceHost found = findByName(requested, own, available);
+            if (found != null) {
+                return found;
+            }
         }
         throw new IllegalStateException(
                 "No ServiceHost named '" + requested + "'. Available: " + available);
+    }
+
+    private static ServiceHost findByName(
+            String requested,
+            ClassLoader cl,
+            java.util.Set<String> seen) {
+        for (var p : ServiceLoader.load(ServiceHost.class, cl)) {
+            String name = p.name();
+            if (requested.equals(name)) {
+                return p;
+            }
+            seen.add(name);
+        }
+        return null;
     }
 }

@@ -29,6 +29,12 @@ public final class NettyServiceHost implements ServiceHost {
 
     @Override
     public URI start(Service service) {
+        java.util.Objects.requireNonNull(service, "service");
+        if (server != null) {
+            throw new IllegalStateException(
+                    "NettyServiceHost.start() called twice without an intervening stop(); "
+                            + "would leak the previously-started Server.");
+        }
         URI endpoint = URI.create("http://localhost:" + Ports.free());
         this.server = Server.builder()
                 .endpoints(endpoint)

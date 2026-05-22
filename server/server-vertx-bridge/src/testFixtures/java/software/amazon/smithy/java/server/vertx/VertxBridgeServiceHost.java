@@ -41,6 +41,12 @@ public final class VertxBridgeServiceHost implements ServiceHost {
 
     @Override
     public URI start(Service service) {
+        java.util.Objects.requireNonNull(service, "service");
+        if (vertx != null) {
+            throw new IllegalStateException(
+                    "VertxBridgeServiceHost.start() called twice without an intervening stop(); "
+                            + "would leak the previously-started Vert.x instance and bridge.");
+        }
         this.vertx = Vertx.vertx();
         Router router = Router.router(vertx);
         this.bound = SmithyServiceBridge.bridge(List.of(service)).bind(router);
